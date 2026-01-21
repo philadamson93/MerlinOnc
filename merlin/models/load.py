@@ -8,7 +8,7 @@ from merlin.models.radiology_report_generation import Clip3DForTextGeneration
 from merlin.utils import download_file
 from typing import Dict, Any
 
-REPO_ID = "stanfordmimi/Merlin"
+DEFAULT_REPO_ID = "stanfordmimi/Merlin"
 MODEL_CONFIGS: Dict[str, Dict[str, Any]] = {
     "default": {
         "builder": MerlinArchitecture,
@@ -22,6 +22,11 @@ MODEL_CONFIGS: Dict[str, Dict[str, Any]] = {
         "builder": MerlinArchitecture,
         "checkpoint": "resnet_clinical_longformer_five_year_disease_prediction.pt",
     },
+    "merlin_onc": {
+        "builder": MerlinArchitecture,
+        "checkpoint": "i3_resnet_clinical_longformer_best_clip_10-08-2025_03-41-48_epoch_99.pt",
+        "repo_id": "philadamson93/MerlinOnc",
+    },
 }
 
 
@@ -32,20 +37,28 @@ class Merlin(nn.Module):
         PhenotypeCls: bool = False,
         RadiologyReport: bool = False,
         FiveYearPred: bool = False,
+        MerlinOnc: bool = False,
+        local_checkpoint_path: str = None,
     ):
         super(Merlin, self).__init__()
 
-        # If both are True, raise an error
+        # If more than one output mode is True, raise an error
         if sum([ImageEmbedding, PhenotypeCls, FiveYearPred]) > 1:
             raise ValueError(
                 "ImageEmbedding and PhenotypeCls and FiveYearPred cannot be True at the same time."
             )
 
-        self.task = (
-            "report_generation"
-            if RadiologyReport
-            else ("five_year_disease_prediction" if FiveYearPred else "default")
-        )
+        # Determine task based on flags
+        if MerlinOnc:
+            self.task = "merlin_onc"
+        elif RadiologyReport:
+            self.task = "report_generation"
+        elif FiveYearPred:
+            self.task = "five_year_disease_prediction"
+        else:
+            self.task = "default"
+
+        self.local_checkpoint_path = local_checkpoint_path
 
         self._config = MODEL_CONFIGS[self.task]
 
@@ -64,16 +77,27 @@ class Merlin(nn.Module):
     def _load_model(self, **kwargs) -> nn.Module:
         """
         Downloads the correct checkpoint and constructs the appropriate model.
+        If local_checkpoint_path is provided, uses that instead of downloading.
         """
-        checkpoint_name = self._config["checkpoint"]
         model_builder = self._config["builder"]
 
-        # Download checkpoint to local directory
-        local_dir = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "checkpoints"
-        )
-        checkpoint_path = os.path.join(local_dir, checkpoint_name)
-        self._download_checkpoint(filename=checkpoint_name, local_dir=local_dir)
+        # Determine checkpoint path
+        if self.local_checkpoint_path is not None:
+            # Use user-provided local path
+            checkpoint_path = self.local_checkpoint_path
+            if not os.path.exists(checkpoint_path):
+                raise FileNotFoundError(f"Checkpoint not found at {checkpoint_path}")
+        else:
+            # Download checkpoint to local directory
+            checkpoint_name = self._config["checkpoint"]
+            repo_id = self._config.get("repo_id", DEFAULT_REPO_ID)
+            local_dir = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "checkpoints"
+            )
+            checkpoint_path = os.path.join(local_dir, checkpoint_name)
+            self._download_checkpoint(
+                filename=checkpoint_name, local_dir=local_dir, repo_id=repo_id
+            )
 
         # Build the model
         model = model_builder(**kwargs)
@@ -88,10 +112,10 @@ class Merlin(nn.Module):
 
         return model
 
-    def _download_checkpoint(self, filename: str, local_dir: str):
+    def _download_checkpoint(self, filename: str, local_dir: str, repo_id: str):
         if not os.path.exists(os.path.join(local_dir, filename)):
-            print(f"Downloading {filename} from Hugging Face Hub...")
-            download_file(repo_id=REPO_ID, filename=filename, local_dir=local_dir)
+            print(f"Downloading {filename} from {repo_id}...")
+            download_file(repo_id=repo_id, filename=filename, local_dir=local_dir)
 
     def forward(self, *args, **kwargs):
         """Delegates the forward call to the underlying model."""
