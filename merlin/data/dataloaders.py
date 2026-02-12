@@ -8,7 +8,7 @@ from typing import List
 from monai.utils import look_up_option
 from monai.data.utils import SUPPORTED_PICKLE_MOD
 
-from merlin.data.monai_transforms import ImageTransforms
+from merlin.data.monai_transforms import ImageTransforms, build_image_transform
 
 
 class CTPersistentDataset(monai.data.PersistentDataset):
@@ -77,13 +77,15 @@ class DataLoader(monai.data.DataLoader):
         batchsize: int,
         shuffle: bool = True,
         num_workers: int = 0,
+        crop_mode: str = "center",
     ):
         self.datalist = datalist
         self.cache_dir = cache_dir
         self.batchsize = batchsize
+        transform = ImageTransforms if crop_mode == "center" else build_image_transform(crop_mode)
         self.dataset = CTPersistentDataset(
             data=datalist,
-            transform=ImageTransforms,
+            transform=transform,
             cache_dir=cache_dir,
         )
         super().__init__(
