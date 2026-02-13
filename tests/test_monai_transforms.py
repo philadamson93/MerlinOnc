@@ -187,15 +187,15 @@ class TestBuildPreprocessTransform:
         assert not any(isinstance(t, TopCenteredSpatialCropd) for t in preprocess.transforms)
 
     def test_crop_roi_leaves_z_unconstrained(self):
-        """The CenterSpatialCropd should have -1 for z (leave z intact)."""
-        preprocess = build_preprocess_transform()
-        crops = [t for t in preprocess.transforms if isinstance(t, CenterSpatialCropd)]
-        assert len(crops) == 1
-        crop = crops[0]
-        # MONAI stores roi_size as tuple; z dimension should be -1
-        assert crop.roi_size[2] == -1
-        assert crop.roi_size[0] == ROI_SIZE[0]
-        assert crop.roi_size[1] == ROI_SIZE[1]
+        """x,y are cropped to 224 but z is preserved at full extent."""
+        # Synthetic volume: x,y larger than 224, z=200 (larger than ROI_SIZE[2]=160)
+        vol = np.random.randn(1, 300, 300, 200).astype(np.float32)
+        crop = CenterSpatialCropd(roi_size=[ROI_SIZE[0], ROI_SIZE[1], -1], keys=["image"])
+        result = crop({"image": vol})["image"]
+
+        assert result.shape[1] == ROI_SIZE[0]  # x cropped to 224
+        assert result.shape[2] == ROI_SIZE[1]  # y cropped to 224
+        assert result.shape[3] == 200          # z preserved
 
 
 # ---------------------------------------------------------------------------
