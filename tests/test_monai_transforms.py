@@ -1,4 +1,4 @@
-"""Tests for TopCenteredSpatialCropd and build_image_transform.
+"""Tests for TopCenteredSpatialCropd, build_image_transform, and multi-crop utilities.
 
 All tests use synthetic numpy/torch tensors — no GPU, model weights, or NIfTI needed.
 """
@@ -12,6 +12,8 @@ from merlin.data.monai_transforms import (
     ROI_SIZE,
     TopCenteredSpatialCropd,
     build_image_transform,
+    build_preprocess_transform,
+    compute_z_crop_positions,
     ImageTransforms,
 )
 
@@ -164,3 +166,79 @@ class TestBuildImageTransform:
 
     def test_roi_size_constant(self):
         assert ROI_SIZE == [224, 224, 160]
+
+
+# ---------------------------------------------------------------------------
+# build_preprocess_transform factory (multi-crop support)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildPreprocessTransform:
+
+    def test_uses_center_spatial_crop(self):
+        """Pipeline includes a CenterSpatialCropd (for x,y only)."""
+        preprocess = build_preprocess_transform()
+        crops = [t for t in preprocess.transforms if isinstance(t, CenterSpatialCropd)]
+        assert len(crops) == 1
+
+    def test_no_top_centered_crop(self):
+        """Pipeline should not include TopCenteredSpatialCropd."""
+        preprocess = build_preprocess_transform()
+        assert not any(isinstance(t, TopCenteredSpatialCropd) for t in preprocess.transforms)
+
+    def test_crop_roi_leaves_z_unconstrained(self):
+        """The CenterSpatialCropd should have -1 for z (leave z intact)."""
+        preprocess = build_preprocess_transform()
+        crops = [t for t in preprocess.transforms if isinstance(t, CenterSpatialCropd)]
+        assert len(crops) == 1
+        crop = crops[0]
+        # MONAI stores roi_size as tuple; z dimension should be -1
+        assert crop.roi_size[2] == -1
+        assert crop.roi_size[0] == ROI_SIZE[0]
+        assert crop.roi_size[1] == ROI_SIZE[1]
+
+
+# ---------------------------------------------------------------------------
+# compute_z_crop_positions
+# ---------------------------------------------------------------------------
+
+
+class TestComputeZCropPositions:
+
+    def test_single_crop(self):
+        """N=1 returns a single position at 0."""
+        positions = compute_z_crop_positions(z_size=200, roi_z=160, num_crops=1)
+        assert positions == [0]
+
+    def test_two_crops_endpoints(self):
+        """N=2 returns inferior-most and superior-most positions."""
+        positions = compute_z_crop_positions(z_size=200, roi_z=160, num_crops=2)
+        assert positions == [0, 40]
+
+    def test_three_crops_evenly_spaced(self):
+        """N=3 gives evenly spaced positions."""
+        positions = compute_z_crop_positions(z_size=220, roi_z=160, num_crops=3)
+        # linspace(0, 60, 3) = [0, 30, 60]
+        assert positions == [0, 30, 60]
+
+    def test_small_volume_fallback(self):
+        """If z_size <= roi_z, always return [0] regardless of num_crops."""
+        positions = compute_z_crop_positions(z_size=100, roi_z=160, num_crops=5)
+        assert positions == [0]
+
+    def test_exact_fit_returns_zero(self):
+        """If z_size == roi_z, return [0]."""
+        positions = compute_z_crop_positions(z_size=160, roi_z=160, num_crops=3)
+        assert positions == [0]
+
+    def test_barely_exceeds_roi(self):
+        """z_size = roi_z + 1: N=2 gives [0, 1]."""
+        positions = compute_z_crop_positions(z_size=161, roi_z=160, num_crops=2)
+        assert positions == [0, 1]
+
+    def test_returns_list_of_ints(self):
+        """Return type is a plain list of Python ints (not numpy)."""
+        positions = compute_z_crop_positions(z_size=300, roi_z=160, num_crops=4)
+        assert isinstance(positions, list)
+        for p in positions:
+            assert isinstance(p, int)

@@ -1,4 +1,4 @@
-from typing import Sequence, Tuple
+from typing import List, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -88,6 +88,44 @@ def build_image_transform(crop_mode: str = "center") -> Compose:
         crop,
         ToTensord(keys=["image"]),
     ])
+
+
+def build_preprocess_transform() -> Compose:
+    """Build a MONAI pipeline that preprocesses but skips the z-crop.
+
+    Same steps as :func:`build_image_transform` (load → orient → resample →
+    scale → pad) but center-crops only x,y to 224 and leaves z at full extent.
+    Intended for multi-crop workflows where the caller extracts z-subvolumes.
+    """
+    return Compose([
+        LoadImaged(keys=["image"]),
+        EnsureChannelFirstd(keys=["image"]),
+        Orientationd(keys=["image"], axcodes="RAS"),
+        Spacingd(keys=["image"], pixdim=(1.5, 1.5, 3), mode=("bilinear")),
+        ScaleIntensityRanged(
+            keys=["image"], a_min=-1000, a_max=1000, b_min=0.0, b_max=1.0, clip=True
+        ),
+        SpatialPadd(keys=["image"], spatial_size=ROI_SIZE),
+        CenterSpatialCropd(roi_size=[ROI_SIZE[0], ROI_SIZE[1], -1], keys=["image"]),
+        ToTensord(keys=["image"]),
+    ])
+
+
+def compute_z_crop_positions(z_size: int, roi_z: int, num_crops: int) -> List[int]:
+    """Return equally-spaced z-start indices for extracting subvolumes.
+
+    Args:
+        z_size: Total z-extent of the preprocessed volume.
+        roi_z: Z-extent of each crop (e.g. 160).
+        num_crops: Desired number of crops.
+
+    Returns:
+        List of integer z-start positions.  If the volume fits in a single
+        crop (``z_size <= roi_z``), returns ``[0]`` regardless of *num_crops*.
+    """
+    if z_size <= roi_z:
+        return [0]
+    return np.linspace(0, z_size - roi_z, num_crops).astype(int).tolist()
 
 
 # Default transform (backward compat)
