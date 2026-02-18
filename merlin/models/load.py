@@ -39,6 +39,7 @@ class Merlin(nn.Module):
         FiveYearPred: bool = False,
         MerlinOnc: bool = False,
         local_checkpoint_path: str = None,
+        class_nb: int = 1692,
     ):
         super(Merlin, self).__init__()
 
@@ -68,6 +69,7 @@ class Merlin(nn.Module):
                 "ImageEmbedding": ImageEmbedding,
                 "PhenotypeCls": PhenotypeCls,
                 "FiveYearPred": FiveYearPred,
+                "class_nb": class_nb,
             }
             if not RadiologyReport
             else {}

@@ -15,6 +15,7 @@ class ImageEncoder(nn.Module):
         ImageEmbedding: bool = False,
         PhenotypeCls: bool = False,
         FiveYearPred: bool = False,
+        class_nb: int = 1692,
     ):
         super().__init__()
         self.ImageEmbedding = ImageEmbedding
@@ -23,7 +24,7 @@ class ImageEncoder(nn.Module):
         resnet = torchvision.models.resnet152(pretrained=True)
         self.i3_resnet = i3res.I3ResNet(
             copy.deepcopy(resnet),
-            class_nb=1692 if not self.FiveYearPred else 6,
+            class_nb=class_nb if not self.FiveYearPred else 6,
             conv_class=True,
             ImageEmbedding=self.ImageEmbedding,
             PhenotypeCls=self.PhenotypeCls,
@@ -73,6 +74,7 @@ class MerlinArchitecture(nn.Module):
         ImageEmbedding: bool = False,
         PhenotypeCls: bool = False,
         FiveYearPred: bool = False,
+        class_nb: int = 1692,
     ):
         super().__init__()
         self.ImageEmbedding = ImageEmbedding
@@ -82,6 +84,7 @@ class MerlinArchitecture(nn.Module):
             ImageEmbedding=self.ImageEmbedding,
             PhenotypeCls=self.PhenotypeCls,
             FiveYearPred=self.FiveYearPred,
+            class_nb=class_nb,
         )
         self.encode_text = TextEncoder()
         self.logit_scale = nn.Parameter(torch.ones([]) * init_logit_scale)
