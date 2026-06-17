@@ -1,0 +1,35 @@
+name: Mirror to VISTA-Stanford
+
+# Continuous read-only mirror: this workflow lives in the CANONICAL source repo
+# (philadamson93/MerlinOnc) and pushes its full history to the org mirror
+# (VISTA-Stanford/MerlinOnc) on every push, daily, or on demand.
+# The mirror is a pure destination — never edit it directly.
+
+on:
+  push:
+    branches: ['**']
+    tags: ['**']
+  schedule:
+    - cron: '17 7 * * *'   # daily safety-net (07:17 UTC)
+  workflow_dispatch: {}
+
+concurrency:
+  group: mirror-vista-stanford
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Bare clone source and mirror-push to VISTA-Stanford
+        env:
+          # PAT (fine-grained) with Contents: Read & Write on VISTA-Stanford/MerlinOnc
+          MIRROR_TOKEN: ${{ secrets.MIRROR_TOKEN }}
+          SRC_TOKEN: ${{ github.token }}   # reads the source (works for public or private)
+        run: |
+          set -euo pipefail
+          git clone --bare "https://x-access-token:${SRC_TOKEN}@github.com/${{ github.repository }}.git" repo.git
+          git -C repo.git push --mirror "https://x-access-token:${MIRROR_TOKEN}@github.com/VISTA-Stanford/MerlinOnc.git"
