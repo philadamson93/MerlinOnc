@@ -11,6 +11,19 @@ from monai.data.utils import SUPPORTED_PICKLE_MOD
 from merlin.data.monai_transforms import ImageTransforms, build_image_transform
 
 
+def _localization_csv_hash(path):
+    """Short content hash of the organ-localization CSV (OQ17 cache key)."""
+    import hashlib
+
+    if not path:
+        return "nocsv"
+    try:
+        with open(path, "rb") as handle:
+            return hashlib.md5(handle.read()).hexdigest()[:8]
+    except OSError:
+        return "missing"
+
+
 class CTPersistentDataset(monai.data.PersistentDataset):
     def __init__(self, data, transform, cache_dir=None):
         super().__init__(data=data, transform=transform, cache_dir=cache_dir)
@@ -78,11 +91,37 @@ class DataLoader(monai.data.DataLoader):
         shuffle: bool = True,
         num_workers: int = 0,
         crop_mode: str = "center",
+        organ_coordinates_path: str = None,
+        organ: str = "lungs",
+        crop_anchor: str = "apex",
+        superior_buffer: int = 5,
     ):
         self.datalist = datalist
-        self.cache_dir = cache_dir
         self.batchsize = batchsize
-        transform = ImageTransforms if crop_mode == "center" else build_image_transform(crop_mode)
+        if crop_mode == "center":
+            transform = ImageTransforms
+        elif crop_mode == "organ_centered":
+            transform = build_image_transform(
+                crop_mode,
+                organ_coordinates_path=organ_coordinates_path,
+                organ=organ,
+                crop_anchor=crop_anchor,
+                superior_buffer=superior_buffer,
+            )
+            # OQ17: the CTPersistentDataset cache key hashes only the image path,
+            # so distinct organ/anchor/CSVs would collide in one cache_dir. Give
+            # organ_centered its own cache namespace (this also fixes the vista-ct
+            # pass-through, which delegates CT preprocessing to this DataLoader).
+            cache_dir = str(
+                Path(cache_dir)
+                / (
+                    f"organ_centered__organ_{organ}__anchor_{crop_anchor}"
+                    f"__buf_{superior_buffer}__csv_{_localization_csv_hash(organ_coordinates_path)}"
+                )
+            )
+        else:
+            transform = build_image_transform(crop_mode)
+        self.cache_dir = cache_dir
         self.dataset = CTPersistentDataset(
             data=datalist,
             transform=transform,
