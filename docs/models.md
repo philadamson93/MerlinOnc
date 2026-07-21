@@ -13,7 +13,7 @@ Merlin's model architecture combines a 3D image encoder (inflated ResNet-152) wi
 
 ## Model Registry
 
-**Location:** `merlin/models/load.py:12`
+**Location:** `merlin/models/load.py:16`
 
 ```python
 DEFAULT_REPO_ID = "stanfordmimi/Merlin"
@@ -59,7 +59,7 @@ The older Oct-2025 MerlinOnc checkpoint (`i3_resnet_clinical_longformer_best_cli
 
 ## Merlin Class
 
-**Location:** `merlin/models/load.py:33`
+**Location:** `merlin/models/load.py:53`
 
 Main user-facing wrapper class.
 
