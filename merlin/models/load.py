@@ -6,9 +6,13 @@ from torch import nn
 from merlin.models.build import MerlinArchitecture
 from merlin.models.radiology_report_generation import Clip3DForTextGeneration
 from merlin.utils import download_file
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 DEFAULT_REPO_ID = "stanfordmimi/Merlin"
+# class_nb is per-entry here (not a single global default) because MerlinOnc
+# checkpoints trained against a wider label set (v2.1/v2.2) need a different
+# classifier-head width than the original 1692-class checkpoint. A caller that
+# doesn't pass class_nb explicitly gets this entry's value (see Merlin.__init__).
 MODEL_CONFIGS: Dict[str, Dict[str, Any]] = {
     "default": {
         "builder": MerlinArchitecture,
@@ -22,10 +26,26 @@ MODEL_CONFIGS: Dict[str, Dict[str, Any]] = {
         "builder": MerlinArchitecture,
         "checkpoint": "resnet_clinical_longformer_five_year_disease_prediction.pt",
     },
+    # "merlin_onc" is the latest-checkpoint alias (currently v2.2). To pin an
+    # exact version instead, pass checkpoint_key="merlin_onc_v2_1" /
+    # "merlin_onc_v2_2" to Merlin(...).
     "merlin_onc": {
         "builder": MerlinArchitecture,
-        "checkpoint": "i3_resnet_clinical_longformer_best_clip_10-08-2025_03-41-48_epoch_99.pt",
+        "checkpoint": "i3_resnet_clinical_longformer_best_clip_07-01-2026_18-38-12_epoch_66.pt",
         "repo_id": "philadamson93/MerlinOnc",
+        "class_nb": 1876,
+    },
+    "merlin_onc_v2_1": {
+        "builder": MerlinArchitecture,
+        "checkpoint": "i3_resnet_clinical_longformer_best_clip_04-03-2026_04-45-12_epoch_99.pt",
+        "repo_id": "philadamson93/MerlinOnc",
+        "class_nb": 1876,
+    },
+    "merlin_onc_v2_2": {
+        "builder": MerlinArchitecture,
+        "checkpoint": "i3_resnet_clinical_longformer_best_clip_07-01-2026_18-38-12_epoch_66.pt",
+        "repo_id": "philadamson93/MerlinOnc",
+        "class_nb": 1876,
     },
 }
 
@@ -39,7 +59,8 @@ class Merlin(nn.Module):
         FiveYearPred: bool = False,
         MerlinOnc: bool = False,
         local_checkpoint_path: str = None,
-        class_nb: int = 1692,
+        checkpoint_key: Optional[str] = None,
+        class_nb: Optional[int] = None,
     ):
         super(Merlin, self).__init__()
 
@@ -59,9 +80,22 @@ class Merlin(nn.Module):
         else:
             self.task = "default"
 
+        # checkpoint_key pins an exact MODEL_CONFIGS entry (e.g. "merlin_onc_v2_1"),
+        # overriding the flag-derived task -- lets a caller select a specific
+        # MerlinOnc version instead of always getting the "merlin_onc" latest alias.
+        if checkpoint_key is not None:
+            self.task = checkpoint_key
+
         self.local_checkpoint_path = local_checkpoint_path
 
         self._config = MODEL_CONFIGS[self.task]
+
+        # class_nb defaults to the checkpoint's own entry (per-entry, since
+        # different MerlinOnc checkpoints were trained against different label
+        # counts); an explicit caller-supplied value still wins.
+        resolved_class_nb = (
+            class_nb if class_nb is not None else self._config.get("class_nb", 1692)
+        )
 
         # Pass through the flags needed by the underlying model builders
         model_kwargs = (
@@ -69,7 +103,7 @@ class Merlin(nn.Module):
                 "ImageEmbedding": ImageEmbedding,
                 "PhenotypeCls": PhenotypeCls,
                 "FiveYearPred": FiveYearPred,
-                "class_nb": class_nb,
+                "class_nb": resolved_class_nb,
             }
             if not RadiologyReport
             else {}
