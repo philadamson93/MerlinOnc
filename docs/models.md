@@ -31,15 +31,31 @@ MODEL_CONFIGS = {
         "builder": MerlinArchitecture,
         "checkpoint": "resnet_clinical_longformer_five_year_disease_prediction.pt",
     },
+    # "merlin_onc" is the latest-checkpoint alias (currently v2.2).
     "merlin_onc": {
         "builder": MerlinArchitecture,
-        "checkpoint": "i3_resnet_clinical_longformer_best_clip_10-08-2025_03-41-48_epoch_99.pt",
+        "checkpoint": "i3_resnet_clinical_longformer_best_clip_07-01-2026_18-38-12_epoch_66.pt",
         "repo_id": "philadamson93/MerlinOnc",  # custom HuggingFace repo
+        "class_nb": 1876,
+    },
+    "merlin_onc_v2_1": {
+        "builder": MerlinArchitecture,
+        "checkpoint": "i3_resnet_clinical_longformer_best_clip_04-03-2026_04-45-12_epoch_99.pt",
+        "repo_id": "philadamson93/MerlinOnc",
+        "class_nb": 1876,
+    },
+    "merlin_onc_v2_2": {
+        "builder": MerlinArchitecture,
+        "checkpoint": "i3_resnet_clinical_longformer_best_clip_07-01-2026_18-38-12_epoch_66.pt",
+        "repo_id": "philadamson93/MerlinOnc",
+        "class_nb": 1876,
     },
 }
 ```
 
-Checkpoints are downloaded from HuggingFace on first use and cached in `merlin/models/checkpoints/`. Each config can specify a custom `repo_id`; if omitted, `DEFAULT_REPO_ID` is used.
+Checkpoints are downloaded from HuggingFace on first use and cached in `merlin/models/checkpoints/`. Each config can specify a custom `repo_id`; if omitted, `DEFAULT_REPO_ID` is used. `class_nb` is per-entry (falls back to 1692 if a config omits it) — see [Using a Pinned MerlinOnc Version](#using-a-pinned-merlinonc-version) below.
+
+The older Oct-2025 MerlinOnc checkpoint (`i3_resnet_clinical_longformer_best_clip_10-08-2025_03-41-48_epoch_99.pt`) is retired — no registry entry points to it as of v2.2's promotion.
 
 ## Merlin Class
 
@@ -57,6 +73,8 @@ class Merlin(nn.Module):
         FiveYearPred: bool = False,
         MerlinOnc: bool = False,
         local_checkpoint_path: str = None,
+        checkpoint_key: Optional[str] = None,
+        class_nb: Optional[int] = None,
     )
 ```
 
@@ -68,8 +86,10 @@ class Merlin(nn.Module):
 | `PhenotypeCls` | bool | Return 1692 phenotype probabilities |
 | `RadiologyReport` | bool | Enable report generation mode |
 | `FiveYearPred` | bool | Return 6 disease probabilities |
-| `MerlinOnc` | bool | Use MerlinOnc weights (oncology-specific) |
+| `MerlinOnc` | bool | Use MerlinOnc weights (oncology-specific; resolves to the `merlin_onc` latest alias unless `checkpoint_key` is also given) |
 | `local_checkpoint_path` | str | Path to local weights file (skips HuggingFace download) |
+| `checkpoint_key` | str | Pin an exact `MODEL_CONFIGS` entry (e.g. `"merlin_onc_v2_1"`), overriding the flag-derived task |
+| `class_nb` | int | Classifier-head width. Defaults to the resolved config entry's `class_nb` (falling back to 1692 if unset); an explicit value here always wins |
 
 ### Instantiation Modes
 
@@ -99,6 +119,23 @@ model = Merlin(
     local_checkpoint_path="/path/to/weights.pt"
 )
 ```
+
+### Using a Pinned MerlinOnc Version
+
+`MerlinOnc=True` alone resolves to the `merlin_onc` **latest** alias (currently v2.2). To pin an
+exact version instead (e.g. for a v2.1-vs-v2.2 comparison), pass `checkpoint_key`:
+
+```python
+# Pin v2.1 explicitly, regardless of which version "merlin_onc" currently aliases
+model = Merlin(MerlinOnc=True, ImageEmbedding=True, checkpoint_key="merlin_onc_v2_1")
+
+# Pin v2.2 explicitly
+model = Merlin(MerlinOnc=True, ImageEmbedding=True, checkpoint_key="merlin_onc_v2_2")
+```
+
+`class_nb` does not need to be passed for either — both entries carry their own `class_nb: 1876`
+in `MODEL_CONFIGS`, so the bare (HuggingFace-download) path loads with the correct classifier-head
+width automatically.
 
 ### Methods
 
