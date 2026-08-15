@@ -110,7 +110,27 @@ class Merlin(nn.Module):
         if self.task == "five_year_disease_prediction":
             model.encode_image.i3_resnet.load_state_dict(state_dict, strict=True)
         else:
-            model.load_state_dict(state_dict)
+            # strict=False here (not blanket permissiveness): some training recipes
+            # (e.g. MerlinOnc v3.0, trained from scratch with VISTA-Bench
+            # prognostic/diagnostic heads on from step 0) save auxiliary classifier
+            # heads that this inference-time architecture never defines. Those keys
+            # are additive and irrelevant to ImageEmbedding/PhenotypeCls inference, so
+            # we drop them -- but any *missing* key still fails loud, since that would
+            # mean the encoder itself doesn't match the checkpoint.
+            missing_keys, unexpected_keys = model.load_state_dict(
+                state_dict, strict=False
+            )
+            if missing_keys:
+                raise RuntimeError(
+                    f"Checkpoint at {checkpoint_path} is missing key(s) required by "
+                    f"the '{self.task}' architecture: {missing_keys}"
+                )
+            if unexpected_keys:
+                print(
+                    f"Ignoring {len(unexpected_keys)} unexpected checkpoint key(s) not "
+                    f"used by the '{self.task}' architecture (e.g. auxiliary training-"
+                    f"only heads): {unexpected_keys}"
+                )
 
         return model
 
