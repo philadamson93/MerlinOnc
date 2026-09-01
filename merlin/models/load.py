@@ -4,18 +4,79 @@ import torch
 from torch import nn
 
 from merlin.models.build import MerlinArchitecture
-from merlin.models.radiology_report_generation import Clip3DForTextGeneration
 from merlin.utils import download_file
 from typing import Dict, Any
 
+# NOTE: ``Clip3DForTextGeneration`` (the report-generation builder) is imported
+# lazily inside ``_load_model`` rather than at module top. It pulls in ``peft``,
+# whose currently-resolved version is incompatible with the pinned
+# ``transformers``; importing it eagerly would break the far more common
+# image-embedding / phenotype paths (and every downstream consumer, incl.
+# vista-ct) even though they never touch report generation.
+
 DEFAULT_REPO_ID = "stanfordmimi/Merlin"
+
+
+def audit_state_dict(model: nn.Module, state_dict: Dict[str, Any]) -> Dict[str, list]:
+    """Return the ``{missing, unexpected, mismatched}`` key sets for a strict load.
+
+    * ``missing``    -- in the model but absent from the checkpoint
+    * ``unexpected`` -- in the checkpoint but absent from the model
+    * ``mismatched`` -- present in both but with a different tensor shape
+
+    A clean load has all three empty. Exposed (not underscore-private) so the
+    strict-preflight test can assert emptiness against the real checkpoint (RD5).
+    """
+    model_sd = model.state_dict()
+    model_keys = set(model_sd.keys())
+    ckpt_keys = set(state_dict.keys())
+    mismatched = sorted(
+        k
+        for k in (model_keys & ckpt_keys)
+        if tuple(getattr(model_sd[k], "shape", ())) != tuple(getattr(state_dict[k], "shape", ()))
+    )
+    return {
+        "missing": sorted(model_keys - ckpt_keys),
+        "unexpected": sorted(ckpt_keys - model_keys),
+        "mismatched": mismatched,
+    }
+
+
+def strict_load_with_audit(model: nn.Module, state_dict: Dict[str, Any], context: str) -> None:
+    """Fail-closed strict load: audit key sets first, stop on any discrepancy,
+    then ``load_state_dict(strict=True)``.
+
+    ``strict=True`` alone stops at the first problem class; this reports all three
+    sets up front so a checkpoint/``class_nb`` mismatch is diagnosable in one shot.
+    We do not fall back to a lenient ``strict=False`` + size-filter -- that can
+    silently drop backbone tensors. Fix the config instead.
+    """
+    audit = audit_state_dict(model, state_dict)
+    if any(audit.values()):
+        def _fmt(keys):
+            if not keys:
+                return "(none)"
+            head = ", ".join(keys[:10])
+            return head + (f" (+{len(keys) - 10} more)" if len(keys) > 10 else "")
+
+        raise RuntimeError(
+            f"Refusing to load {context}: state-dict key audit is non-empty.\n"
+            f"  missing ({len(audit['missing'])}): {_fmt(audit['missing'])}\n"
+            f"  unexpected ({len(audit['unexpected'])}): {_fmt(audit['unexpected'])}\n"
+            f"  mismatched ({len(audit['mismatched'])}): {_fmt(audit['mismatched'])}\n"
+            "This usually means the checkpoint was trained with a different "
+            "architecture / class_nb than requested. Fix the config rather than "
+            "loosening strictness."
+        )
+    model.load_state_dict(state_dict, strict=True)
 MODEL_CONFIGS: Dict[str, Dict[str, Any]] = {
     "default": {
         "builder": MerlinArchitecture,
         "checkpoint": "i3_resnet_clinical_longformer_best_clip_04-02-2024_23-21-36_epoch_99.pt",
     },
     "report_generation": {
-        "builder": Clip3DForTextGeneration,
+        # Builder imported lazily in _load_model (see module-top note re: peft).
+        "builder": None,
         "checkpoint": "resnet_gpt2_best_stanford_report_generation_average.pt",
     },
     "five_year_disease_prediction": {
@@ -82,6 +143,13 @@ class Merlin(nn.Module):
         If local_checkpoint_path is provided, uses that instead of downloading.
         """
         model_builder = self._config["builder"]
+        if model_builder is None and self.task == "report_generation":
+            # Lazy: only the report-generation path needs peft (see module top).
+            from merlin.models.radiology_report_generation import (
+                Clip3DForTextGeneration,
+            )
+
+            model_builder = Clip3DForTextGeneration
 
         # Determine checkpoint path
         if self.local_checkpoint_path is not None:
@@ -110,7 +178,9 @@ class Merlin(nn.Module):
         if self.task == "five_year_disease_prediction":
             model.encode_image.i3_resnet.load_state_dict(state_dict, strict=True)
         else:
-            model.load_state_dict(state_dict)
+            strict_load_with_audit(
+                model, state_dict, context=f"'{self.task}' checkpoint {checkpoint_path}"
+            )
 
         return model
 

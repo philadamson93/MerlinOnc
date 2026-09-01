@@ -240,6 +240,9 @@ def build_image_transform(
     organ: str = "lungs",
     crop_anchor: str = "apex",
     superior_buffer: int = 5,
+    *,
+    pixdim: Tuple[float, float, float] = (1.5, 1.5, 3.0),
+    spatial_size: Sequence[int] = None,
 ) -> Compose:
     """Build the MONAI preprocessing pipeline with the specified crop mode.
 
@@ -251,11 +254,23 @@ def build_image_transform(
         organ_coordinates_path: path to the vista-ct localization CSV (required
                    when crop_mode == "organ_centered").
         organ / crop_anchor / superior_buffer: OrganCenteredCropd parameters.
+        pixdim: target voxel spacing in mm (x, y, z); keyword-only so the
+                positional ``build_image_transform("center")`` callers stay
+                valid. Defaults to Merlin's historical ``(1.5, 1.5, 3.0)``.
+        spatial_size: target matrix / crop size (x, y, z); keyword-only.
+                ``None`` resolves to ``ROI_SIZE`` (Merlin's historical
+                ``[224, 224, 160]``), keeping ``ROI_SIZE`` the single source
+                of the default.
     """
+    if spatial_size is None:
+        spatial_size = ROI_SIZE
+    spatial_size = list(spatial_size)
+    pixdim = tuple(float(x) for x in pixdim)
+
     if crop_mode == "center":
-        crop = CenterSpatialCropd(roi_size=ROI_SIZE, keys=["image"])
+        crop = CenterSpatialCropd(roi_size=spatial_size, keys=["image"])
     elif crop_mode == "top_centered":
-        crop = TopCenteredSpatialCropd(keys=["image"], roi_size=ROI_SIZE)
+        crop = TopCenteredSpatialCropd(keys=["image"], roi_size=spatial_size)
     elif crop_mode == "organ_centered":
         if not organ_coordinates_path:
             raise ValueError(
@@ -264,7 +279,7 @@ def build_image_transform(
             )
         crop = OrganCenteredCropd(
             keys=["image"],
-            roi_size=ROI_SIZE,
+            roi_size=spatial_size,
             organ_coordinates_path=organ_coordinates_path,
             organ=organ,
             anchor=crop_anchor,
@@ -279,33 +294,47 @@ def build_image_transform(
         LoadImaged(keys=["image"]),
         EnsureChannelFirstd(keys=["image"]),
         Orientationd(keys=["image"], axcodes="RAS"),
-        Spacingd(keys=["image"], pixdim=(1.5, 1.5, 3), mode=("bilinear")),
+        Spacingd(keys=["image"], pixdim=pixdim, mode=("bilinear")),
         ScaleIntensityRanged(
             keys=["image"], a_min=-1000, a_max=1000, b_min=0.0, b_max=1.0, clip=True
         ),
-        SpatialPadd(keys=["image"], spatial_size=ROI_SIZE),
+        SpatialPadd(keys=["image"], spatial_size=spatial_size),
         crop,
         ToTensord(keys=["image"]),
     ])
 
 
-def build_preprocess_transform() -> Compose:
+def build_preprocess_transform(
+    *,
+    pixdim: Tuple[float, float, float] = (1.5, 1.5, 3.0),
+    spatial_size: Sequence[int] = None,
+) -> Compose:
     """Build a MONAI pipeline that preprocesses but skips the z-crop.
 
     Same steps as :func:`build_image_transform` (load → orient → resample →
-    scale → pad) but center-crops only x,y to 224 and leaves z at full extent.
-    Intended for multi-crop workflows where the caller extracts z-subvolumes.
+    scale → pad) but center-crops only x,y to ``spatial_size`` and leaves z at
+    full extent. Intended for multi-crop workflows where the caller extracts
+    z-subvolumes.
+
+    ``pixdim`` / ``spatial_size`` are keyword-only and default to Merlin's
+    historical values (``(1.5, 1.5, 3.0)`` / ``ROI_SIZE``), so the no-arg
+    ``build_preprocess_transform()`` behaviour is unchanged.
     """
+    if spatial_size is None:
+        spatial_size = ROI_SIZE
+    spatial_size = list(spatial_size)
+    pixdim = tuple(float(x) for x in pixdim)
+
     return Compose([
         LoadImaged(keys=["image"]),
         EnsureChannelFirstd(keys=["image"]),
         Orientationd(keys=["image"], axcodes="RAS"),
-        Spacingd(keys=["image"], pixdim=(1.5, 1.5, 3), mode=("bilinear")),
+        Spacingd(keys=["image"], pixdim=pixdim, mode=("bilinear")),
         ScaleIntensityRanged(
             keys=["image"], a_min=-1000, a_max=1000, b_min=0.0, b_max=1.0, clip=True
         ),
-        SpatialPadd(keys=["image"], spatial_size=ROI_SIZE),
-        CenterSpatialCropd(roi_size=[ROI_SIZE[0], ROI_SIZE[1], -1], keys=["image"]),
+        SpatialPadd(keys=["image"], spatial_size=spatial_size),
+        CenterSpatialCropd(roi_size=[spatial_size[0], spatial_size[1], -1], keys=["image"]),
         ToTensord(keys=["image"]),
     ])
 
