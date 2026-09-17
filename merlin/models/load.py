@@ -42,7 +42,52 @@ def audit_state_dict(model: nn.Module, state_dict: Dict[str, Any]) -> Dict[str, 
     }
 
 
-def strict_load_with_audit(model: nn.Module, state_dict: Dict[str, Any], context: str) -> None:
+TEXT_TOWER_PREFIX = "encode_text."
+
+
+def audit_state_dict_excluding_text_tower(
+    model: nn.Module, state_dict: Dict[str, Any]
+) -> Dict[str, list]:
+    """``audit_state_dict`` over everything except the ``encode_text.*`` tower.
+
+    Used only in image-embedding mode, where the text tower never runs (see
+    ``MerlinArchitecture.forward``: ``ImageEmbedding`` returns ``encode_image(image)``
+    and raises if given text). Strictness over every tensor that DOES participate in
+    the forward pass is unchanged.
+    """
+    keep = lambda k: not k.startswith(TEXT_TOWER_PREFIX)  # noqa: E731
+    model_sd = {k: v for k, v in model.state_dict().items() if keep(k)}
+    ckpt = {k: v for k, v in state_dict.items() if keep(k)}
+    model_keys, ckpt_keys = set(model_sd), set(ckpt)
+    mismatched = sorted(
+        k
+        for k in (model_keys & ckpt_keys)
+        if tuple(getattr(model_sd[k], "shape", ()))
+        != tuple(getattr(ckpt[k], "shape", ()))
+    )
+    return {
+        "missing": sorted(model_keys - ckpt_keys),
+        "unexpected": sorted(ckpt_keys - model_keys),
+        "mismatched": mismatched,
+    }
+
+
+def _discrepancies_confined_to_text_tower(audit: Dict[str, list]) -> bool:
+    """Every missing/mismatched key is a text-tower key, and nothing is unexpected."""
+    flagged = audit["missing"] + audit["mismatched"]
+    return (
+        bool(flagged)
+        and not audit["unexpected"]
+        and all(k.startswith(TEXT_TOWER_PREFIX) for k in flagged)
+    )
+
+
+def strict_load_with_audit(
+    model: nn.Module,
+    state_dict: Dict[str, Any],
+    context: str,
+    allow_unloaded_text_tower: bool = False,
+) -> None:
     """Fail-closed strict load: audit key sets first, stop on any discrepancy,
     then ``load_state_dict(strict=True)``.
 
@@ -50,6 +95,14 @@ def strict_load_with_audit(model: nn.Module, state_dict: Dict[str, Any], context
     sets up front so a checkpoint/``class_nb`` mismatch is diagnosable in one shot.
     We do not fall back to a lenient ``strict=False`` + size-filter -- that can
     silently drop backbone tensors. Fix the config instead.
+
+    ``allow_unloaded_text_tower`` (set only in image-embedding mode) permits ONE
+    narrow exception: a checkpoint whose discrepancies are confined entirely to
+    ``encode_text.*``. A CLIP model trained against precomputed text vectors has no
+    Clinical-Longformer body to ship, so those keys are legitimately absent -- and in
+    image-embedding mode the text tower never runs, so leaving it at its init cannot
+    change a single output value. Everything that DOES run is still loaded strictly:
+    an unexpected key, or any image-side discrepancy, still raises.
     """
     audit = audit_state_dict(model, state_dict)
     if any(audit.values()):
@@ -58,6 +111,28 @@ def strict_load_with_audit(model: nn.Module, state_dict: Dict[str, Any], context
                 return "(none)"
             head = ", ".join(keys[:10])
             return head + (f" (+{len(keys) - 10} more)" if len(keys) > 10 else "")
+
+        if allow_unloaded_text_tower and _discrepancies_confined_to_text_tower(audit):
+            image_audit = audit_state_dict_excluding_text_tower(model, state_dict)
+            if not any(image_audit.values()):
+                loadable = {
+                    k: v
+                    for k, v in state_dict.items()
+                    if not k.startswith(TEXT_TOWER_PREFIX)
+                }
+                # strict=False only because the text tower is deliberately absent;
+                # the audit above already proved every loaded key matches exactly.
+                model.load_state_dict(loadable, strict=False)
+                print(
+                    f"Loaded {context} in image-embedding mode WITHOUT its text tower: "
+                    f"{len(audit['missing'])} missing + {len(audit['mismatched'])} "
+                    f"mismatched keys, all under '{TEXT_TOWER_PREFIX}', left at init. "
+                    "The text tower does not run in this mode. Every image-side tensor "
+                    "was loaded and audited strictly."
+                )
+                return
+            audit = image_audit
+            context += " (image-side audit, text tower excluded)"
 
         raise RuntimeError(
             f"Refusing to load {context}: state-dict key audit is non-empty.\n"
@@ -179,7 +254,10 @@ class Merlin(nn.Module):
             model.encode_image.i3_resnet.load_state_dict(state_dict, strict=True)
         else:
             strict_load_with_audit(
-                model, state_dict, context=f"'{self.task}' checkpoint {checkpoint_path}"
+                model,
+                state_dict,
+                context=f"'{self.task}' checkpoint {checkpoint_path}",
+                allow_unloaded_text_tower=bool(kwargs.get("ImageEmbedding")),
             )
 
         return model
