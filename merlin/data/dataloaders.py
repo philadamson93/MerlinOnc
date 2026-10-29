@@ -1,8 +1,11 @@
 import torch
 import monai
 from copy import deepcopy
+import os
 import shutil
 import tempfile
+import warnings
+import zipfile
 from pathlib import Path
 from typing import List
 from monai.utils import look_up_option
@@ -87,14 +90,28 @@ class CTPersistentDataset(monai.data.PersistentDataset):
             hashfile = self.cache_dir / f"{data_item_md5}.pt"
 
         if hashfile is not None and hashfile.is_file():
-            cached_image = torch.load(hashfile, weights_only=False)
-            _item_transformed["image"] = cached_image
-            return _item_transformed
+            try:
+                cached_image = torch.load(hashfile, weights_only=False)
+            except Exception as e:
+                # A truncated file (a write cut short, e.g. by a full disk) is not a valid zip:
+                # drop it and recompute. Anything else (e.g. MONAI version skew) still raises,
+                # so good shared cache files are never deleted by mistake.
+                if zipfile.is_zipfile(hashfile):
+                    raise
+                warnings.warn(f"Truncated cache file {hashfile.name} ({e}); recomputing it.")
+                try:
+                    hashfile.unlink()
+                except OSError:
+                    pass
+            else:
+                _item_transformed["image"] = cached_image
+                return _item_transformed
 
         _image_transformed = self._pre_transform(image_data)["image"]
         _item_transformed["image"] = _image_transformed
         if hashfile is None:
             return _item_transformed
+        staged = hashfile.with_name(f".{hashfile.name}.{os.getpid()}.part")
         try:
             # NOTE: Writing to a temporary directory and then using a nearly atomic rename operation
             #       to make the cache more robust to manual killing of parent process
@@ -110,14 +127,21 @@ class CTPersistentDataset(monai.data.PersistentDataset):
                     pickle_protocol=self.pickle_protocol,
                 )
                 if temp_hash_file.is_file() and not hashfile.is_file():
-                    # On Unix, if target exists and is a file, it will be replaced silently if the user has permission.
-                    # for more details: https://docs.python.org/3/library/shutil.html#shutil.move.
-                    try:
-                        shutil.move(str(temp_hash_file), hashfile)
-                    except FileExistsError:
-                        pass
+                    # The temp dir is usually on another filesystem, where a move is a copy; a
+                    # copy cut short would leave a truncated file under the real name. Copy next
+                    # to the target first, then rename it into place.
+                    shutil.copyfile(temp_hash_file, staged)
+                    os.replace(staged, hashfile)
         except PermissionError:  # project-monai/monai issue #3613
             pass
+        except (OSError, RuntimeError) as e:
+            # The cache is best-effort: a failed write (e.g. a full disk) must not fail the scan.
+            warnings.warn(f"Could not cache {hashfile.name} ({e}); continuing without it.")
+        finally:
+            try:
+                staged.unlink()
+            except OSError:
+                pass
         return _item_transformed
 
     def _transform(self, index: int):
