@@ -7,7 +7,9 @@ real names; every later read of them failed the scan. Covered here:
   * a cache file that is a complete zip but still fails to load keeps raising, so good
     shared cache files are never deleted by mistake;
   * a failed cache write warns and still returns the computed image, leaving neither a
-    file under the real name nor a staged ``.part`` file.
+    file under the real name nor a staged ``.part`` file;
+  * a cache file written by MONAI < 1.6 (md5 name; 1.6 uses sha256) is found and read,
+    read-only: a broken one is skipped, never deleted, and nothing is written under md5.
 
 All synthetic — no GPU, model weights, NIfTI, or mount access needed.
 """
@@ -60,6 +62,39 @@ def test_complete_zip_that_fails_to_load_still_raises(tmp_path):
     with pytest.raises(Exception):
         ds._cachecheck(ds.data[0])
     assert hashfile.is_file()
+
+
+def _legacy_file(ds, value):
+    legacy = ds._legacy_md5_hashfile({"image": "scan.nii.gz"})
+    torch.save(value, legacy)
+    return legacy
+
+
+def test_legacy_md5_cache_file_is_used_and_nothing_new_written(tmp_path):
+    ds = _dataset(tmp_path)
+    legacy = _legacy_file(ds, torch.full((1, 2, 2, 2), 7.0))
+    assert len(legacy.stem) == 32 and len(_hashfile(ds).stem) == 64
+    out = ds._cachecheck(ds.data[0])
+    assert torch.equal(out["image"], torch.full((1, 2, 2, 2), 7.0))
+    assert not _hashfile(ds).exists()
+
+
+def test_broken_legacy_cache_file_is_recomputed_and_left_alone(tmp_path):
+    ds = _dataset(tmp_path)
+    legacy = _legacy_file(ds, torch.full((1, 2, 2, 2), 7.0))
+    data = legacy.read_bytes()
+    legacy.write_bytes(data[: len(data) // 2])
+    with pytest.warns(UserWarning, match="Unreadable legacy cache file"):
+        out = ds._cachecheck(ds.data[0])
+    assert torch.equal(out["image"], torch.ones(1, 2, 2, 2))
+    assert legacy.read_bytes() == data[: len(data) // 2]
+    assert zipfile.is_zipfile(_hashfile(ds))
+
+
+def test_no_legacy_lookup_with_a_custom_hash(tmp_path):
+    ds = _dataset(tmp_path)
+    ds.hash_func = lambda item: b"custom"
+    assert ds._legacy_md5_hashfile({"image": "scan.nii.gz"}) is None
 
 
 def test_failed_cache_write_still_returns_image(tmp_path, monkeypatch):

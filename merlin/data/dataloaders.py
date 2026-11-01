@@ -1,7 +1,9 @@
 import torch
 import monai
 from copy import deepcopy
+import hashlib
 import os
+import pickle
 import shutil
 import tempfile
 import warnings
@@ -9,7 +11,7 @@ import zipfile
 from pathlib import Path
 from typing import List
 from monai.utils import look_up_option
-from monai.data.utils import SUPPORTED_PICKLE_MOD
+from monai.data.utils import SUPPORTED_PICKLE_MOD, pickle_hashing, sorted_dict
 
 from merlin.data.monai_transforms import ImageTransforms, ROI_SIZE, build_image_transform
 
@@ -76,6 +78,15 @@ class CTPersistentDataset(monai.data.PersistentDataset):
 
         print(f"Size of dataset: {self.__len__()}\n")
 
+    def _legacy_md5_hashfile(self, image_data):
+        """Where MONAI < 1.6 cached this item: it named files by md5, 1.6 by sha256 of the same
+        pickle. Caches written before the switch (e.g. the c3d training run's 336^3 tensors) are
+        otherwise never found again. Only for the default hash; None when it does not apply."""
+        if self.cache_dir is None or self.hash_func is not pickle_hashing:
+            return None
+        dump = pickle.dumps(sorted_dict(image_data), protocol=pickle.HIGHEST_PROTOCOL)
+        return self.cache_dir / f"{hashlib.md5(dump).hexdigest()}.pt"
+
     def _cachecheck(self, item_transformed):
         hashfile = None
         _item_transformed = deepcopy(item_transformed)
@@ -106,6 +117,16 @@ class CTPersistentDataset(monai.data.PersistentDataset):
             else:
                 _item_transformed["image"] = cached_image
                 return _item_transformed
+
+        legacy = self._legacy_md5_hashfile(image_data)
+        if legacy is not None and legacy.is_file():
+            # Read-only: a broken legacy file is skipped, never deleted, and nothing new is
+            # written under the md5 name.
+            try:
+                _item_transformed["image"] = torch.load(legacy, weights_only=False)
+                return _item_transformed
+            except Exception as e:
+                warnings.warn(f"Unreadable legacy cache file {legacy.name} ({e}); recomputing.")
 
         _image_transformed = self._pre_transform(image_data)["image"]
         _item_transformed["image"] = _image_transformed
